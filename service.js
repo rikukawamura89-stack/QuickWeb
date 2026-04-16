@@ -1,0 +1,108 @@
+// service.js - ZenDev Hybrid Engine v3.5
+let peer = null, conn = null, fl = null;
+
+function bootPeer(id) {
+    const iceConfig = {
+        'iceServers': [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+            { urls: 'stun:stun2.l.google.com:19302' },
+            // Tambahan TURN Server untuk proteksi jarak jauh (Optional/Gratis)
+            { urls: 'turn:openrelay.metered.ca:443', username: 'openrelayproject', password: 'openrelayproject' }
+        ]
+    };
+
+    peer = new Peer(id, { config: iceConfig, debug: 1 });
+
+    peer.on('open', () => { 
+        document.getElementById('node-stat').innerText = "● ONLINE";
+        document.getElementById('node-stat').style.color = "var(--neon)";
+        log("NODE_ONLINE: ID_" + id);
+    });
+
+    peer.on('connection', c => setup(c));
+
+    peer.on('error', err => {
+        log("ERR: " + err.type);
+        if(err.type === 'peer-disconnected') log("PEER_LOST_SIGNAL");
+    });
+}
+
+function connectNode() { 
+    const tid = document.getElementById('target-id').value.trim(); 
+    if(tid) {
+        log("ATTEMPTING_LINK...");
+        const newConn = peer.connect(tid, { reliable: true });
+        if(newConn) setup(newConn);
+    } 
+}
+
+function setup(c) {
+    conn = c;
+    conn.on('open', () => { 
+        log("LINKED_TO_REMOTE"); 
+        document.getElementById('conn-btn').innerText = "CONNECTED"; 
+        document.getElementById('conn-btn').style.background = "orange";
+    });
+
+    conn.on('data', data => {
+        if(data.type === 'START') {
+            window.rx = { c: [], m: data };
+            log("RECEIVING: " + data.name);
+        }
+        else if(data.type === 'CHUNK') {
+            window.rx.c.push(data.chunk);
+            if(window.rx.c.length === window.rx.m.total) {
+                const bl = new Blob(window.rx.c);
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(bl); a.download = window.rx.m.name;
+                a.className = "btn"; a.style.marginTop="10px"; a.innerText = "DOWNLOAD: " + window.rx.m.name;
+                document.getElementById('log').prepend(a);
+                log("FILE_RECEIVED_SUCCESS");
+            }
+        }
+    });
+
+    conn.on('close', () => {
+        log("LINK_TERMINATED");
+        document.getElementById('conn-btn').innerText = "ESTABLISH LINK";
+        document.getElementById('conn-btn').style.background = "var(--neon)";
+    });
+}
+
+function log(m) { document.getElementById('log').innerHTML = `<div>> ${m}</div>` + document.getElementById('log').innerHTML; }
+
+function filePick() { 
+    fl = document.getElementById('f-in').files[0]; 
+    if(fl) { 
+        document.getElementById('f-name').innerText = fl.name; 
+        document.getElementById('send-btn').disabled = false; 
+    } 
+}
+
+async function execSend() {
+    if(!conn || !conn.open) { log("ERR: NO_ACTIVE_LINK"); return; }
+    // Ambil CH_SIZE dari localStorage (Fitur Config lo tetap jalan)
+    const CH_SIZE = (parseInt(localStorage.getItem("qw30_ch")) || 10) * 1024 * 1024;
+    const tt = Math.ceil(fl.size / CH_SIZE);
+    const startTime = Date.now();
+    
+    log("INJECTING_DATA...");
+    conn.send({ type: 'START', name: fl.name, total: tt });
+
+    for(let i=0; i<tt; i++) {
+        if(!conn.open) break;
+        const chunk = await fl.slice(i*CH_SIZE, (i+1)*CH_SIZE).arrayBuffer();
+        conn.send({ type: 'CHUNK', chunk: chunk });
+        
+        const elapsed = (Date.now() - startTime) / 1000;
+        const speed = ((i + 1) * CH_SIZE / (1024 * 1024)) / (elapsed || 1);
+        
+        document.getElementById('st-prog').innerText = Math.floor(((i+1)/tt)*100) + "%";
+        document.getElementById('st-speed').innerText = speed.toFixed(1) + " MB/s";
+        document.getElementById('st-time').innerText = elapsed.toFixed(0) + "s";
+        
+        if(i % 5 === 0) log(`BLOCK_${i+1}/${tt}_SENT`);
+    }
+    log("INJECTION_COMPLETE");
+}
